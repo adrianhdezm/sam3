@@ -101,7 +101,7 @@ uv run flash login
 
 # 1. dev loop: real GPUs, hot reload, Swagger at http://localhost:8888/docs
 uv run flash dev --auto-provision
-uv run python scripts/smoke_client.py photo.jpg "window" --url http://localhost:8888
+uv run python scripts/smoke_client.py photo.jpg "window" --url http://localhost:8888/lb_worker
 
 # 2. production
 uv run flash deploy         # prints the endpoint URL, e.g. https://<id>.api.runpod.ai
@@ -112,17 +112,26 @@ uv run flash undeploy sam3-segment
 ```
 
 Deployed calls need `Authorization: Bearer $RUNPOD_API_KEY`; the body is the plain request JSON (no
-`{"input": ...}` wrapper — that is only for queue-based endpoints).
+`{"input": ...}` wrapper — that is only for queue-based endpoints). During `flash dev` the routes are
+mounted under the module name: `http://localhost:8888/lb_worker/segment`. Two `flash dev`-only quirks: handler errors come back as
+`500 Remote execution failed: 400: ...` (production returns the real `400`/`422`), and every name a
+handler uses must be imported inside its body, because dev ships only the function source to the worker.
+Also, `flash dev` hot-installs dependency changes into the *running* worker; transformers caches its
+"is torchvision available" check per process, so after adding a dependency recycle the worker with
+`uv run flash undeploy live-sam3-segment --force` and restart `flash dev` (the volume/cache survives).
 
 What `lb_worker.py` configures (edit there):
 
 - **GPU**: `GpuGroup.ADA_24` with `AMPERE_24` fallback; `workers=(0, 2)` scales to zero, `idle_timeout=120`.
+  Measured on an RTX 4090: ~45 s cold start, ~25 s first request (model load from the volume), then ~1.5 s
+  per request end to end.
 - **Model cache**: a 20 GB `NetworkVolume` mounted at `/runpod-volume`, `HF_HOME` pointed at it, so only the
   very first cold start downloads the weights. A volume pins the endpoint to one datacenter
   (`SAM3_DATACENTER`, default `EU_RO_1`) — pick one close to you with GPU availability.
 - **Secrets**: `.env` is local-only; `HF_TOKEN` reaches workers only because it is passed through `env=`.
-- **Dependencies**: torch ships in the Flash GPU image; `transformers`, `opencv-python-headless`, etc. are
-  installed from `dependencies=[...]`.
+- **Dependencies**: the Flash GPU image ships torch 2.9.1+cu128 but no torchvision, so `torchvision==0.24.1`
+  (the build for that torch) is pinned alongside `transformers`, `opencv-python-headless`, etc. in
+  `dependencies=[...]`. If Runpod bumps the image's torch, `/health` reports the versions — re-pin to match.
 
 ## Environment variables
 
