@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.env
+.env.local
+.flash/
+build/
+dist/
+*.egg-info/
+overlay*.png
