@@ -135,6 +135,21 @@ What `lb_worker.py` configures (edit there):
   worker before transformers is imported. The same pin sits in `dependencies=[...]` for `flash dev`. If Runpod
   bumps the image's torch, `/health` reports the versions — update both pins (or `SAM3_TORCHVISION_PIN`).
 
+## Calling the Runpod endpoint from Cloudflare
+
+Configure the Worker with:
+
+| | value | where |
+|---|---|---|
+| `RUNPOD_ENDPOINT_URL` | `https://<id>.api.runpod.ai` (printed by `flash deploy` / `flash env get production`) | `wrangler.toml` `[vars]` |
+| `RUNPOD_API_KEY` | your Runpod API key | `npx wrangler secret put RUNPOD_API_KEY` (never in `wrangler.toml`) |
+
+Then forward `POST ${RUNPOD_ENDPOINT_URL}/segment` with headers `Authorization: Bearer ${RUNPOD_API_KEY}`
+and `Content-Type: application/json`, and the request body exactly as in [API](#api) (flat JSON, no
+`{"input": ...}` wrapper). Pass the response status and JSON through: `200`, `400`, `422`, or `502` while a
+worker cold-starts (~45-110 s boot + ~25 s model load; Cloudflare returns `524` after ~100 s, so retry on `502`
+or keep a worker warm with `workers=(1, 2)` in `lb_worker.py`).
+
 ## Environment variables
 
 | var | default | purpose |
