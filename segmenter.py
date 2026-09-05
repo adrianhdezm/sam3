@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import importlib.util
 import io
 import logging
 import os
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 
@@ -27,6 +30,8 @@ logger = logging.getLogger(__name__)
 MODEL_ID = os.environ.get("SAM3_MODEL_ID", "facebook/sam3")
 # Douglas-Peucker epsilon for polygon simplification, in pixels. 0 disables simplification.
 POLYGON_TOLERANCE_PX = float(os.environ.get("SAM3_POLYGON_TOLERANCE", "1.0"))
+# Must match the torch preinstalled in the Runpod Flash GPU image (2.9.1+cu128); see lb_worker.py.
+TORCHVISION_PIN = os.environ.get("SAM3_TORCHVISION_PIN", "torchvision==0.24.1")
 
 
 @dataclass
@@ -94,8 +99,41 @@ def mask_to_polygon(mask: np.ndarray, tolerance: float = POLYGON_TOLERANCE_PX) -
     return pts.tolist()
 
 
+def _pip_install(spec: str) -> None:
+    """Install a wheel into the running interpreter, trying pip, then ensurepip+pip, then uv."""
+    attempts = [
+        [sys.executable, "-m", "pip", "install", "--quiet", "--no-deps", spec],
+        [sys.executable, "-m", "ensurepip", "--upgrade"],  # bootstraps pip; next attempt retries it
+        [sys.executable, "-m", "pip", "install", "--quiet", "--no-deps", spec],
+        ["uv", "pip", "install", "--python", sys.executable, "--no-deps", spec],
+    ]
+    errors = []
+    for cmd in attempts:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            errors.append(f"{' '.join(cmd[:3])}: {getattr(e, 'stderr', None) or e}".strip()[:400])
+            continue
+        importlib.invalidate_caches()
+        if importlib.util.find_spec(spec.split("==")[0]) is not None:
+            return
+    raise RuntimeError(f"could not install {spec}: " + " | ".join(errors))
+
+
+def ensure_torchvision() -> None:
+    """Install torchvision if absent. Sam3ImageProcessor requires it, but Runpod Flash strips torch*
+    packages from deploy bundles (assuming the base image provides them) while the LB GPU image ships
+    torch without torchvision. Must run before transformers is imported: it caches the availability check.
+    """
+    if importlib.util.find_spec("torchvision") is not None:
+        return
+    logger.warning("torchvision not found; installing %s", TORCHVISION_PIN)
+    _pip_install(TORCHVISION_PIN)
+
+
 class Sam3Segmenter:
     def __init__(self, model_id: str = MODEL_ID, device: torch.device | None = None, dtype: torch.dtype | None = None):
+        ensure_torchvision()
         from transformers import Sam3Model, Sam3Processor  # heavy import kept local
 
         self.device = device or pick_device()

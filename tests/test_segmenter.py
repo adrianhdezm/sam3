@@ -58,6 +58,39 @@ def test_uint8_mask_from_model_is_accepted():
     assert len(segmenter.mask_to_polygon(mask)) == 4
 
 
+# --- ensure_torchvision ------------------------------------------------------------------
+
+def test_ensure_torchvision_noop_when_present(monkeypatch):
+    calls = []
+    monkeypatch.setattr(segmenter.subprocess, "run", lambda *a, **k: calls.append(a))
+    segmenter.ensure_torchvision()  # torchvision is installed in the dev env
+    assert calls == []
+
+
+def test_ensure_torchvision_installs_pin_without_deps(monkeypatch):
+    calls = []
+    # torchvision "appears" only after an install command has run
+    monkeypatch.setattr(segmenter.importlib.util, "find_spec", lambda name: object() if calls else None)
+    monkeypatch.setattr(segmenter.subprocess, "run", lambda cmd, **k: calls.append((cmd, k)))
+    segmenter.ensure_torchvision()
+    ((cmd, kwargs),) = calls
+    assert cmd[:4] == [segmenter.sys.executable, "-m", "pip", "install"]
+    assert "--no-deps" in cmd and cmd[-1] == segmenter.TORCHVISION_PIN
+    assert kwargs.get("check") is True
+
+
+def test_ensure_torchvision_falls_back_and_reports_all_failures(monkeypatch):
+    monkeypatch.setattr(segmenter.importlib.util, "find_spec", lambda name: None)
+
+    def fail(cmd, **k):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(segmenter.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="could not install torchvision") as ei:
+        segmenter.ensure_torchvision()
+    assert "uv pip install" in str(ei.value)  # the last fallback was tried
+
+
 # --- decode_image --------------------------------------------------------------------------
 
 def test_decode_plain_base64():

@@ -129,9 +129,11 @@ What `lb_worker.py` configures (edit there):
   very first cold start downloads the weights. A volume pins the endpoint to one datacenter
   (`SAM3_DATACENTER`, default `EU_RO_1`) — pick one close to you with GPU availability.
 - **Secrets**: `.env` is local-only; `HF_TOKEN` reaches workers only because it is passed through `env=`.
-- **Dependencies**: the Flash GPU image ships torch 2.9.1+cu128 but no torchvision, so `torchvision==0.24.1`
-  (the build for that torch) is pinned alongside `transformers`, `opencv-python-headless`, etc. in
-  `dependencies=[...]`. If Runpod bumps the image's torch, `/health` reports the versions — re-pin to match.
+- **Dependencies**: the Flash GPU image ships torch 2.9.1+cu128 but no torchvision, which SAM3 needs.
+  `flash deploy` strips `torch*` packages from the bundle (hardcoded, assumes the image has them), so
+  `segmenter.ensure_torchvision()` pip-installs the pinned `torchvision==0.24.1` (8 MB, `--no-deps`) once per
+  worker before transformers is imported. The same pin sits in `dependencies=[...]` for `flash dev`. If Runpod
+  bumps the image's torch, `/health` reports the versions — update both pins (or `SAM3_TORCHVISION_PIN`).
 
 ## Environment variables
 
@@ -144,3 +146,4 @@ What `lb_worker.py` configures (edit there):
 | `SAM3_POLYGON_TOLERANCE` | `1.0` | polygon simplification in px, `0` = none |
 | `SAM3_LAZY_LOAD` | unset | `1` = don't load the model at server startup |
 | `SAM3_DATACENTER` | `EU_RO_1` | Runpod network-volume datacenter |
+| `SAM3_TORCHVISION_PIN` | `torchvision==0.24.1` | installed at runtime if torchvision is missing (Runpod) |

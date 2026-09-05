@@ -29,6 +29,8 @@ api = Endpoint(
     execution_timeout_ms=120_000,
     # The Flash GPU image ships torch 2.9.1+cu128 (Python 3.12) but no torchvision, which the SAM3 image
     # processor needs. Pin the torchvision that targets that exact torch so pip doesn't pull a new torch.
+    # `flash dev` installs this list on the worker; `flash deploy` strips torch* packages from the bundle,
+    # so segmenter.ensure_torchvision() installs the same pin at runtime when missing.
     dependencies=[
         "torchvision==0.24.1",
         "transformers>=5.16",
@@ -66,12 +68,22 @@ async def health() -> dict:
     except OSError:
         uptime = None
 
+    # Readiness: make sure torchvision is importable now rather than on the first /segment.
+    try:
+        import segmenter
+
+        segmenter.ensure_torchvision()
+        deps_error = None
+    except Exception as e:  # noqa: BLE001 - reported, not raised, so health stays informative
+        deps_error = f"{type(e).__name__}: {e}"[:1500]
+
     return {
-        "status": "ok",
+        "status": "ok" if deps_error is None else "degraded",
         "cuda": torch.cuda.is_available(),
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "versions": {p: ver(p) for p in ("torch", "torchvision", "transformers")},
         "worker_uptime_s": uptime,
+        "deps_error": deps_error,
     }
 
 
@@ -97,6 +109,9 @@ async def segment(image_base64: str, text: str, threshold: float = 0.5, mask_thr
         image = segmenter.decode_image(req.image_base64)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    model = segmenter.get_segmenter()
-    detections = await asyncio.to_thread(model.segment, image, req.text, req.threshold, req.mask_threshold)
+    try:
+        model = segmenter.get_segmenter()
+        detections = await asyncio.to_thread(model.segment, image, req.text, req.threshold, req.mask_threshold)
+    except Exception as e:  # noqa: BLE001 - the LB runtime would otherwise return an opaque 500
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}"[:2000]) from e
     return SegmentResponse(items=[SegmentItem(**asdict(d)) for d in detections]).model_dump()
